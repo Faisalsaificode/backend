@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>PDF.js 3D Tilt</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { --card-w: min(90vw, 900px); }
+    body {
+      margin: 0; font-family: system-ui, Arial, sans-serif;
+      min-height: 100vh; display: grid; place-items: center;
+      background: radial-gradient(circle at 20% 20%, #1a1a1a, #0e0e12 60%, #000 100%);
+      color: #f5f5f5;
+    }
+    h2 { text-align: center; margin: 24px 0 12px; font-weight: 600; opacity: .9; }
+
+    /* 3D stage */
+    .stage {
+      perspective: 1000px;
+      width: var(--card-w);
+      display: grid; gap: 12px; justify-items: center;
+    }
+
+    /* 3D card wrapper */
+    .card {
+      position: relative;
+      width: 100%;
+      transform-style: preserve-3d;
+      transition: transform 200ms ease, box-shadow 200ms ease;
+      border-radius: 14px;
+      box-shadow:
+        0 30px 60px rgba(0,0,0,.55),
+        0 10px 20px rgba(0,0,0,.35);
+      background: #111; /* in case canvas is smaller while loading */
+      overflow: hidden;
+    }
+
+    /* Canvas fills the card */
+    #pdf-render {
+      width: 100%;
+      height: auto;
+      display: block;
+      transform: translateZ(1px); /* nudge forward */
+    }
+
+    /* Glossy glare layer */
+    .glare {
+      position: absolute; inset: 0;
+      pointer-events: none;
+      mix-blend-mode: screen;
+      background: radial-gradient(1200px 600px at var(--gx, 30%) var(--gy, 30%),
+                  rgba(255,255,255,.22), rgba(255,255,255,.08) 40%, transparent 70%);
+      transform: translateZ(40px);
+      transition: opacity 200ms ease;
+      opacity: .65;
+    }
+
+    /* Soft hover scale */
+    .card:hover { box-shadow:
+      0 40px 80px rgba(0,0,0,.6),
+      0 16px 28px rgba(0,0,0,.4);
+    }
+
+    /* Optional control row (zoom) */
+    .controls {
+      display: flex; gap: 10px; align-items: center; justify-content: center;
+      font-size: 14px; opacity: .9;
+    }
+    .btn {
+      padding: 8px 12px; border: 1px solid #444; border-radius: 10px;
+      background: #1b1b22; color: #eee; cursor: pointer;
+      transition: transform .1s ease, background .2s ease;
+    }
+    .btn:active { transform: scale(.98); }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <h2>PDF Viewer with 3D Tilt</h2>
+    <div class="controls">
+      <button class="btn" id="zoomOut">−</button>
+      <span id="zoomLabel">100%</span>
+      <button class="btn" id="zoomIn">+</button>
+    </div>
+
+    <div class="card" id="card">
+      <canvas id="pdf-render"></canvas>
+      <div class="glare" id="glare"></div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.min.js"></script>
+  <script>
+    // ======= PDF.js setup =======
+    const url = "FaisalSaifi_Resume.pdf";
+    const pdfjsLib = window["pdfjs-dist/build/pdf"];
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.worker.min.js";
+
+    const canvas = document.getElementById("pdf-render");
+    const ctx = canvas.getContext("2d");
+    const zoomLabel = document.getElementById("zoomLabel");
+
+    let pdfDoc = null;
+    let currentPage = 1;
+    let baseScale = 1;      // logical zoom (100% at 1)
+    const deviceScale = window.devicePixelRatio || 1;
+
+    function renderPage(pageNum) {
+      pdfDoc.getPage(pageNum).then(page => {
+        const viewport = page.getViewport({ scale: baseScale });
+        // Render at higher DPI for crispness, then scale down via CSS
+        const outputScale = deviceScale;
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        canvas.style.width = Math.floor(viewport.width) + "px";
+        canvas.style.height = Math.floor(viewport.height) + "px";
+
+        const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+
+        const renderContext = {
+          canvasContext: ctx,
+          viewport,
+          transform
+        };
+        page.render(renderContext);
+        zoomLabel.textContent = Math.round(baseScale * 100) + "%";
+      });
+    }
+
+    pdfjsLib.getDocument(url).promise.then(pdf => {
+      pdfDoc = pdf;
+      renderPage(currentPage);
+    });
+
+    // Zoom controls
+    document.getElementById("zoomIn").addEventListener("click", () => {
+      baseScale = Math.min(baseScale * 1.15, 3);
+      renderPage(currentPage);
+    });
+    document.getElementById("zoomOut").addEventListener("click", () => {
+      baseScale = Math.max(baseScale / 1.15, 0.5);
+      renderPage(currentPage);
+    });
+
+    // ======= 3D tilt & glare =======
+    const card = document.getElementById("card");
+    const glare = document.getElementById("glare");
+
+    const maxTilt = 10; // degrees
+    const damp = 0.12;  // easing for animation
+    let rotX = 0, rotY = 0, targetX = 0, targetY = 0;
+
+    function onMove(e) {
+      const rect = card.getBoundingClientRect();
+      const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+      const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+
+      const px = (x / rect.width) - 0.5;   // -0.5 .. 0.5
+      const py = (y / rect.height) - 0.5;
+
+      targetY = px * maxTilt;              // rotateY with horizontal movement
+      targetX = -py * maxTilt;             // rotateX with vertical movement
+
+      // Move glare hotspot
+      glare.style.setProperty("--gx", (x / rect.width) * 100 + "%");
+      glare.style.setProperty("--gy", (y / rect.height) * 100 + "%");
+    }
+
+    function onLeave() {
+      targetX = 0; targetY = 0;
+    }
+
+    function animate() {
+      rotX += (targetX - rotX) * damp;
+      rotY += (targetY - rotY) * damp;
+      card.style.transform = `rotateX(${rotX}deg) rotateY(${rotY}deg)`;
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    card.addEventListener("mousemove", onMove);
+    card.addEventListener("mouseleave", onLeave);
+    card.addEventListener("touchmove", onMove, { passive: true });
+    card.addEventListener("touchend", onLeave);
+  </script>
+</body>
+</html>
