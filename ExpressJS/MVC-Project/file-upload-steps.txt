@@ -1,0 +1,5 @@
+Install multer
+changes in views
+middleware to hangle files
+apply  that midddleware
+update controller to update urls of images
